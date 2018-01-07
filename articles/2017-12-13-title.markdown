@@ -209,18 +209,41 @@ We can use Reactive Programming to process asynchronous incoming data—perhaps 
 
 ## Building an App with RxPy
 
-First of all, we need to install the libraries that we are going to use in the code. To do that we can execute the following commands from the terminal:
+First of all, we need to setup our environment by installing all the requirements we need to get our reactive web socket working. To do that on an easier and more organized way we are going to use [PipEnv](https://github.com/kennethreitz/pipenv) Pipenv is a dependency manager that isolates projects on private environments, replacing pip and allowing us to install only what we really need for a certain project. PipEnv will easily manage the environment and the libraries we need to install.
 
 ```bash
-# we might need to replace pip with pip3
-pip install tornado
+pip install pipenv
 
-pip install pycurl
+```
+Now we have to create the new environment by executing the following commands:
 
-pip install rx
+```bash
+# create our project directory and move to it
+mkdir rxtornado && cd rxtornado
+
+# run pipenv to create a Python 3 (--three) virtualenv for our project
+pipenv --three
+
+# install the dependencies we need
+pipenv install tornado rx pycurl
+
+```
+Once we execute this commands we can find two new files created on our project's root directory:
+
+* Pipfile, a file that contains details about our project, like the Python version that we are using and the packages that our project needs.
+* Pipenv.lock, a file that contains exactly what version of each package our project depends on, and its transitive dependencies.
+
+Now that we are ready with the environment, we need to create a file called config.py which will contain the constants like the adress of the organizations we will be searching for in Github and also the TOKEN to use the Github API.
+
+```python
+TOKEN = <TOKEN>
+headers = {'Content-Type' : 'application/json' } #get the content in json format
+headers["Authorization"] = "token " + TOKEN #authentication for github
+GITHUB_API_URL = "https://api.github.com"
+orgs = ["/twitter/repos", "/auth0/repos", "/nasa/repos", "/mozilla/repos", "/adobe/repos"]
 ```
 
-Now that we are ready with the libraries, we need to import certain modules from it:
+After that, we need to create a file called server.py which will contain the main code for the project, for this code we need to import certain modules from the libraries we just got installed:
 
 ```python
 from rx import Observable
@@ -234,15 +257,36 @@ from tornado.websocket import WebSocketHandler
 
 Here we have imported the `Observable` and `Subject` modules from the RxPy library and the `async` and `websocket` modules from Tornado to handle the requests.
 
-It is important to notice that, to use the GitHub API authentication, we need to configure the Tornado HttpClient as a curl async client with the following line at the beginning of the code:
+It is important to notice that, to use the GitHub API authentication, we need to configure the Tornado HttpClient as a curl async client with the following line right after the imported libraries:
 
 ```python
 AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
 ```
+We also need to initialize our headers and the organizations adress we already declare on the config file.
+
+```python
+headers = conf.headers
+GIT_ORG = conf.GITHUB_API_URL+"/orgs"
+```
+### Building the WebSocketHandler
+
+Our application will exchange messages with a browser using web sockets. Web sockets allow a bidirectional communication between the browser and server in real time. The main idea is to define a class inherited from the `WebSocketHandler` class. We can find more information about Tornado WebSockets [here](http://www.tornadoweb.org).
+
+Let's define the WebSocketHandler class with the following code:
+
+```python
+class WSHandler(WebSocketHandler):
+    orgs = conf.orgs
+
+    def check_origin(self, origin):
+	#Override to enable support for allowing alternate origins.
+        return True
+```
+Here we are initializing the organizations names and defining the origin check, which we can override if we need support for alternate origins.
 
 ### Obtaining Data
 
-To obtain the data from the GitHub API, first we need to define a function inside our web socket handler. This function will create an asynchronous `http_client` which will take the organization names received and return the requested repository information asynchronously as a response.
+To obtain the data from the GitHub API, first we need to define a function inside our WebSocketHandler. This function will create an asynchronous `http_client` which will take the organization names received and return the requested repository information asynchronously as a response.
 
 ```python
 def get_org_repos(self,org):
@@ -252,11 +296,7 @@ def get_org_repos(self,org):
     return response
 ```
 
-### Building the WebSocketHandler
-
-Our application will exchange messages with a browser using web sockets. Web sockets allow a bidirectional communication between the browser and server in real time. The main idea is to define a class inherited from the `WebSocketHandler` class. We can find more information about Tornado WebSockets [here](http://www.tornadoweb.org).
-
-In our implementation of this class, we will override the following methods:
+In our implementation of the WebSocketHandler class, we will override the following methods:
 
 * `on_message()`: This functon will be called when there is an incoming message on the web socket. As our response is formatted as JSON objects, we have to decode it and then push it to the `Subject` with the `on_next()` operator.
 * `on_close()`: This function will be called once we close the web socket. As we read before, it is very important to unsubscribe the `Observable` once the operation has been terminated to avoid memory leaks. As such, in this method we are going to use the `dispose()` method.
@@ -267,14 +307,14 @@ Inside the `open()` method, we are also going to define the methods `send_respon
 ```python
 
 def on_message(self, message):
-        obj = json_decode(message)
-        self.subject.on_next(obj['term'])
+    obj = json_decode(message)
+    self.subject.on_next(obj['term'])
 
-    def on_close(self):
-        # Unsubscribe from observable
-        #  will stop the work of all observable
-        self.combine_latest_sbs.dispose()
-        print("WebSocket closed")
+def on_close(self):
+    # Unsubscribe from observable
+    #  will stop the work of all observable
+    self.combine_latest_sbs.dispose()
+    print("WebSocket closed")
 
 def open(self):
     print("WebSocket opened")
@@ -317,8 +357,26 @@ After that, we are going to create an interval `Observable` which will help us t
 Finally, we will combine both the interval Observable and the input value Subject so when either of it has a change it will be emitting a Subject to the chain. The chain will send it to the `send_response` method and then to the `get_data` method to be filtered and showed as the result.
 
 ### Filtering Incoming Data
-
 To get the data filtered we are going to use a chain of Observable maps which are going to take the query (the user input) and evaluate it acording to the requirements we have set.
+
+First we need to create the `get_info` method inside the WebSocketHandler class with the following:
+```python
+def get_info(self,req):
+    """managing error codes and returning a list of json with content"""
+    if req.code ==200:
+        jsresponse = json.loads(req.body)
+        return jsresponse
+    elif req.code == 403:
+        print("403 error")
+        jsresponse = json.loads(req.body)
+        return json.dumps("clear")
+    else:
+        return json.dumps("failed")
+
+```
+This method will help us to handle the exceptions of the request or if everything's ok (code == 200) we will get a json formatted response with the information.
+
+Now we create the get_data method also inside the WebSocketHandler class with:
 
 ```python
 def get_data(self,query):
@@ -347,21 +405,101 @@ def get_data(self,query):
 ```
 First we are going to iterate by the organizations list defined on the config file. We get the organization repository information and then transform the response to the desirable format with the get_info method. After that we are making the query to the information we just got and take only the first 10 results that acomplish with this query. Finally we emit the Observable as a dictionary with the characteristics we will be showing in the page as a result.
 
-Finally the result of the request and the filtering is shown in the page with the feeder.js script.
-```javascript
-ws.onmessage = function(msg) {
-    var value = JSON.parse(msg.data);
-    if (value === "clear") {$results.empty(); return;}
-            $('<li><h3><a tabindex="-1" href="' + value.link +
-                '">' + value.name +'</a></h3> <p> Description : '
-		+ value.description +
-                '</p><p> Language : ' + value.language +
-                '</p><p> Stars : ' + value.stars + '</p></li>'
-            ).appendTo($results);
-            $results.show();
-}
+Finally we need to initialize and start the ioLoop for the web socket and render the `index.html` page which is going to show the results of the request with the following code:
+
+```python
+class MainHandler(RequestHandler):
+    def get(self):
+        self.render("index.html")
+
+def main():
+    port = os.environ.get("PORT", 8080)
+    app = Application([
+        url(r"/", MainHandler),
+        (r'/ws', WSHandler),
+        (r'/static/(.*)', StaticFileHandler, {'path': "."})
+    ])
+    print("Starting server at port: %s" % port)
+    app.listen(port)
+    ioloop.IOLoop.current().start()
+
+if __name__ == '__main__':
+    main()
+```
+Here we are starting the web socket so it can listen on port 8080.
+We can check the entire code of the server.py [here](https://github.com/valerybriz/RxGithubSearcher/blob/master/server.py)
+
+### Showing the results on the page
+
+To show the results we are using two static files which will be index.html and feeder.js.
+Let's replace the content of the index.html with:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" >
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="description" content="">
+  <meta name="author" content="">
+  <title>Github Searcher</title>
+  <link rel="stylesheet" href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+</head>
+<body>
+  <div class="container">
+    <div class="col-xs-12 col-md-10 col-md-offset-1 col-lg-8 col-lg-offset-2">
+      <div class="page-header">
+        <h1>Github Repositories Searcher with RxPY</h1>
+        <p class="lead">You are searching repositories from Auth0, Mozilla, Adobe, Twitter and Nasa</p>
+      </div>
+      <form role="form">
+        <div class="form-group">
+          <label for="textInput">Enter keywords or a programming language to search on the repos</label>
+          <input type="text" id="textInput" class="form-control" placeholder="Query...">
+        </div>
+      </form>
+      <ul id="results"></ul>
+    </div>
+  </div>
+  <script src="//code.jquery.com/jquery-2.2.4.min.js"></script>
+  <script src="static/feeder.js"></script>
+</body>
+</html>
 
 ```
+As you can see, we will be replacing the <ul id="results"></ul> with the results of the request to the Github API dinamically.
+
+And let's replace the content of the feeder.js with:
+```javascript
+(function (global, $, undefined) {
+    function main() {
+        var $input = $('#textInput'),
+            $results = $('#results');
+        var ws = new WebSocket("ws://localhost:8080/ws");
+
+        $input.keyup(function(ev) {
+            var msg = { term: ev.target.value };
+            ws.send(JSON.stringify(msg));
+        });
+	ws.onmessage = function(msg) {
+	    var value = JSON.parse(msg.data);
+	    if (value === "clear") {$results.empty(); return;}
+		    $('<li><h3><a tabindex="-1" href="' + value.link +
+		        '">' + value.name +'</a></h3> <p> Description : '
+			+ value.description +
+		        '</p><p> Language : ' + value.language +
+		        '</p><p> Stars : ' + value.stars + '</p></li>'
+		    ).appendTo($results);
+		    $results.show();
+	}
+    }
+    main();
+}(window, jQuery));
+
+```
+There you go!
+Now to run it we just execute the server.py file and the app will be served at http://localhost:8080.
 
 ## Conclusions
 
