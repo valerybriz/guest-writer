@@ -233,7 +233,7 @@ Once we execute this commands we can find two new files created on our project's
 * Pipfile, a file that contains details about our project, like the Python version that we are using and the packages that our project needs.
 * Pipenv.lock, a file that contains exactly what version of each package our project depends on, and its transitive dependencies.
 
-Now that we are ready with the environment, we need to create a file called config.py which will contain the constants like the adress of the organizations we will be searching for in Github and also the TOKEN to use the Github API.
+Now that we are ready with the environment, we need to create a file called config.py which will contain the constants like the adress of the organizations we will be searching for in Github and also the TOKEN to use the Github API, we would have to replace the <TOKEN> with our own TOKEN, to get it we need to follow the instructions on [this page](https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/).
 
 ```python
 TOKEN = <TOKEN>
